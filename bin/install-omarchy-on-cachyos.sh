@@ -151,6 +151,11 @@ if [ -f install/preflight/guard.sh ]; then
     sed -i '/^for marker in .*cachyos-release/,/^done$/d' install/preflight/guard.sh
     grep -q 'cachyos-release' install/preflight/guard.sh && \
         echo "WARN: guard.sh still references cachyos-release after patch — review it" >&2 || true
+    # Also drop the "must have Limine" guard so Omarchy installs on a GRUB-based CachyOS too.
+    # Omarchy's Limine-specific bits (limine-snapper) are already neutralized above; the rest of
+    # Omarchy (Hyprland/UWSM session + configs) is bootloader-agnostic. Snapshots stay on CachyOS's
+    # own tooling (grub-btrfs) instead of Omarchy's limine-snapper-sync.
+    sed -i '/command -v limine &>\/dev\/null || abort/d' install/preflight/guard.sh
 fi
 
 # Do NOT disable the mkinitcpio pacman hooks on CachyOS (BLOCKER, latent). Upstream disables them
