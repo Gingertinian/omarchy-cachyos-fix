@@ -312,6 +312,16 @@ elif [ -f /usr/bin/claude ]; then
     sudo rm -f /usr/bin/claude
 fi
 
+# Self-heal: if a previous (un-patched) run disabled the mkinitcpio pacman hooks, re-enable them
+# now. Upstream's only re-enable lives in limine-snapper.sh (which we blank), so without this a
+# system left mid-install would never regenerate its initramfs -> unbootable on the next update.
+for h in 90-mkinitcpio-install 60-mkinitcpio-remove; do
+    if [ -f "/usr/share/libalpm/hooks/$h.hook.disabled" ]; then
+        echo "Re-enabling mkinitcpio hook: $h"
+        sudo mv "/usr/share/libalpm/hooks/$h.hook.disabled" "/usr/share/libalpm/hooks/$h.hook" || true
+    fi
+done
+
 # Run the modified install.sh script
 chmod +x install.sh
 ./install.sh
