@@ -236,6 +236,16 @@ echo ""
 echo "Press Enter to begin the installation of Omarchy..."
 read -r
 
+# tealdeer (CachyOS default) provides /usr/bin/tldr and conflicts with the `tldr` package
+# that Omarchy pulls in as a dependency. Removing tldr from the package lists is NOT enough,
+# because pacman still resolves tldr as a transitive dependency and aborts packaging/base.sh
+# with "tldr and tealdeer are in conflict". Remove tealdeer so tldr can install cleanly —
+# both provide the exact same `tldr` command, so nothing is lost.
+if pacman -Q tealdeer &>/dev/null 2>&1; then
+    echo "Removing tealdeer (conflicts with the tldr dependency Omarchy needs)..."
+    sudo pacman -Rdd --noconfirm tealdeer || true
+fi
+
 # Remove existing claude-code to prevent a file conflict during the omarchy install.
 # (CachyOS may have installed it separately; pacman aborts if /usr/bin/claude already exists.) PR #38
 if pacman -Q claude-code &>/dev/null 2>&1; then
