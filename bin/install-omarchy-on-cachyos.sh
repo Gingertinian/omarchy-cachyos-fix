@@ -6,18 +6,26 @@ if ! command -v git &> /dev/null; then
     exit 1
 fi
 
+# Do NOT run with sudo: omarchy v5's guard.sh aborts when EUID==0. Run as your normal user
+# (the script uses sudo only where needed).
+if [ "$EUID" -eq 0 ]; then
+    echo "Do NOT run this installer with sudo — omarchy aborts as root. Run it as your normal user."
+    exit 1
+fi
+
 # Fetch Omarchy from repo
 echo "Fetching Omarchy source..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OMARCHY_DIR="$SCRIPT_DIR/../../omarchy"
 
-if [ -f "./fetch-omarchy.sh" ]; then
-    chmod +x ./fetch-omarchy.sh
-    ./fetch-omarchy.sh
+# Locate fetch-omarchy.sh next to this script (absolute), not via the current directory (PR #50).
+if [ -f "$SCRIPT_DIR/fetch-omarchy.sh" ]; then
+    chmod +x "$SCRIPT_DIR/fetch-omarchy.sh"
+    (cd "$SCRIPT_DIR" && ./fetch-omarchy.sh)
 else
     # Fallback if script is missing
-    echo "fetch-omarchy.sh not found, falling back to default clone..."
-    git clone https://www.github.com/basecamp/omarchy "$OMARCHY_DIR"
+    echo "fetch-omarchy.sh not found next to the installer, falling back to default clone..."
+    git clone https://github.com/basecamp/omarchy "$OMARCHY_DIR"
 fi
 
 if [ ! -d "$OMARCHY_DIR" ]; then
@@ -115,13 +123,42 @@ cd "$OMARCHY_DIR"
 # Robust: exact-line match across all *.packages, not just the one file (newer Omarchy layouts).
 find install -name '*.packages' -exec sed -i '/^tldr$/d' {} +
 
-# Update restart-needed for kernel updates to use cachyos instead of arch
-sed -i "s/ | sed 's\/-arch\/\\\.arch\/'//" bin/omarchy-update-restart
-sed -i "s/'{print \$2}'/'{print \$2 \"-\" \$1}' | sed 's\/-linux\/\/'/" bin/omarchy-update-restart
-sed -i '/linux-cachyos/ ! s/pacman -Q linux/pacman -Q linux-cachyos/' bin/omarchy-update-restart
+# Remove `yay` from EVERY package list — CachyOS users commonly run `yay-bin` (provides
+# /usr/bin/yay) which CONFLICTS with the `yay` package omarchy lists; base.sh's batch
+# `pacman -S --noconfirm --needed` can't resolve it non-interactively and aborts (mroboff #32).
+# Safe: this fork already guarantees a working `yay` above. Exact-line match never hits yay-bin/yay-debug.
+find install -name '*.packages' -exec sed -i '/^yay$/d' {} +
+
+# omarchy v5 rewrote omarchy-update-restart (vmlinuz + pacman -Qo + uname -r, NOT `pacman -Q linux`),
+# which is already kernel-name-agnostic and works on CachyOS. Only patch the legacy pattern if it
+# reappears (older tags selectable via fetch-omarchy.sh) — never patch blindly into a no-op.
+if grep -q 'pacman -Q linux' bin/omarchy-update-restart 2>/dev/null; then
+    sed -i "s/ | sed 's\/-arch\/\\\.arch\/'//" bin/omarchy-update-restart
+    sed -i "s/'{print \$2}'/'{print \$2 \"-\" \$1}' | sed 's\/-linux\/\/'/" bin/omarchy-update-restart
+    sed -i '/linux-cachyos/ ! s/pacman -Q linux/pacman -Q linux-cachyos/' bin/omarchy-update-restart
+fi
 
 # Remove pacman.sh from preflight/all.sh to prevent conflict with cachyos packages
 sed -i '/run_logged \$OMARCHY_INSTALL\/preflight\/pacman\.sh/d' install/preflight/all.sh
+
+# Neutralize omarchy v5 guard.sh (BLOCKER on CachyOS): preflight/all.sh SOURCES guard.sh into
+# install.sh's main shell (set -eEo pipefail, shares the TTY). On CachyOS /etc/cachyos-release
+# exists -> guard.sh calls abort() -> `gum confirm || exit 1`: piped/no-TTY -> exit 1 aborts the
+# WHOLE install; with a TTY -> a surprise y/n mid-install. Drop ONLY the Arch-derivative marker
+# loop; the other guards (limine/btrfs/x86_64/non-root/secure-boot/no-GNOME-KDE) stay active and
+# CachyOS legitimately satisfies them.
+if [ -f install/preflight/guard.sh ]; then
+    sed -i '/^for marker in .*cachyos-release/,/^done$/d' install/preflight/guard.sh
+    grep -q 'cachyos-release' install/preflight/guard.sh && \
+        echo "WARN: guard.sh still references cachyos-release after patch — review it" >&2 || true
+fi
+
+# Do NOT disable the mkinitcpio pacman hooks on CachyOS (BLOCKER, latent). Upstream disables them
+# for install speed and only re-enables them at the bottom of login/limine-snapper.sh — which we
+# blank out — so they would stay *.disabled FOREVER. The next `pacman -Syu` kernel upgrade and the
+# NVIDIA DKMS rebuilds would then never regenerate the initramfs/UKI -> unbootable-after-update.
+find install -name 'disable-mkinitcpio.sh' -exec sh -c 'printf "#!/bin/bash\nexit 0\n" > "$1"' _ {} \;
+sed -i '/disable-mkinitcpio/d' install/preflight/all.sh
 
 # Replace nvidia.sh with custom CachyOS driver logic (absolute path; PR #50)
 cp "$SCRIPT_DIR/nvidia.sh" install/config/hardware/nvidia.sh
@@ -137,8 +174,11 @@ if [[ ! "${SETUP_NVIDIA,,}" =~ ^(y|yes)$ ]]; then
     echo "[*] NVIDIA setup deferred — will run on the integrated GPU. Use nvidia-later.sh afterwards."
 fi
 
-# Fix omarchy-ai-skill.sh symlink to be idempotent on re-runs
-sed -i 's/ln -s/ln -sf/' install/config/omarchy-ai-skill.sh
+# Fix omarchy-ai-skill.sh symlink to be idempotent — only if upstream still uses the plain
+# `ln -s ` form (v5 already uses `ln -sfn`; blindly seding it would make a malformed `ln -sffn`).
+if grep -qE 'ln -s ' install/config/omarchy-ai-skill.sh 2>/dev/null; then
+    sed -i 's/ln -s /ln -sfn /g' install/config/omarchy-ai-skill.sh
+fi
 
 # Remove plymouth.sh source line from install.sh
 sed -i '/run_logged \$OMARCHY_INSTALL\/login\/plymouth\.sh/d' install/login/all.sh
@@ -150,8 +190,14 @@ sed -i '/run_logged \$OMARCHY_INSTALL\/login\/plymouth\.sh/d' install/login/all.
 find install -name 'limine-snapper.sh' -exec sh -c 'printf "#!/bin/bash\nexit 0\n" > "$1"' _ {} \;
 find install -name 'all.sh' -exec sed -i '/limine-snapper/d' {} +
 
-# Remove alt-bootloaders.sh source line from install.sh
-sed -i '/run_logged \$OMARCHY_INSTALL\/login\/alt-bootloaders\.sh/d' install/login/all.sh
+# Skip Omarchy's hibernation setup on CachyOS: omarchy-hibernation-setup creates a RAM-sized btrfs
+# swapfile, edits /etc/fstab, and injects resume=/resume_offset= + HOOKS+=(resume) into
+# /etc/default/limine (i.e. into CachyOS's native Limine stack), all unprompted. Let the user opt
+# into hibernation later via CachyOS's own tooling.
+find install -name 'all.sh' -exec sed -i '/login\/hibernation\.sh/d' {} +
+
+# Remove alt-bootloaders.sh invocation (gone in v5; defensive for older selectable tags).
+find install -name 'all.sh' -exec sed -i '/alt-bootloaders/d' {} +
 
 # Remove pacman.sh from post-install/all.sh to prevent conflict with cachyos packages
 sed -i '/run_logged \$OMARCHY_INSTALL\/post-install\/pacman\.sh/d' install/post-install/all.sh
@@ -177,8 +223,10 @@ fi
 NETEOF
 fi
 
-# Pin walker to the omarchy repo so CachyOS doesn't override it with an
-# incompatible version that breaks compatibility with elephant.
+# Pin walker to the omarchy repo so CachyOS doesn't override it with an incompatible version that
+# breaks compatibility with elephant. Idempotent: the source tree ($OMARCHY_DIR) is reused across
+# runs, so only insert the block once (the `1a` would otherwise duplicate it every run).
+if ! grep -q 'Pin walker to omarchy repo' install/config/walker-elephant.sh 2>/dev/null; then
 sed -i '1a\
 # Pin walker to omarchy repo to prevent CachyOS version conflict\
 if ! grep -q "^IgnorePkg.*walker" /etc/pacman.conf 2>/dev/null; then\
@@ -189,12 +237,19 @@ if ! grep -q "^IgnorePkg.*walker" /etc/pacman.conf 2>/dev/null; then\
   fi\
 fi\
 ' install/config/walker-elephant.sh
+fi
 
-# Update mise activation to support both bash and fish
-sed -i 's/omarchy-cmd-present mise && eval "\$(mise activate bash)"/if [ "\$SHELL" = "\/bin\/bash" ] \&\& command -v mise \&> \/dev\/null; then\n  eval "\$(mise activate bash)"\nelif [ "\$SHELL" = "\/bin\/fish" ] \&\& command -v mise \&> \/dev\/null; then\n  mise activate fish | source\nfi/' config/uwsm/env
+# Update mise activation to support both bash and fish. Loose match tolerates v5's `--shims`, and
+# the shell check is path-agnostic (fish lives in /usr/bin/fish on CachyOS, not /bin/fish).
+sed -i 's@omarchy-cmd-present mise && eval "\$(mise activate bash[^)]*)"@if command -v mise \&> /dev/null; then\n  case "$SHELL" in\n    */fish) mise activate fish | source ;;\n    *) eval "$(mise activate bash)" ;;\n  esac\nfi@' config/uwsm/env
 
-# Fix SDDM autologin to use the intended username instead of $USER.
-# The install runs as root, so without this fix autologin.conf would get User=root (PR #38).
+# Make Omarchy's `cp default/bashrc ~/.bashrc` non-destructive (back up the user's bashrc first;
+# CachyOS defaults to fish and may carry its own dotfiles).
+sed -i 's#^cp ~/.local/share/omarchy/default/bashrc ~/.bashrc#[ -f ~/.bashrc ] \&\& cp ~/.bashrc ~/.bashrc.pre-omarchy; cp ~/.local/share/omarchy/default/bashrc ~/.bashrc#' install/config/config.sh
+
+# Fix SDDM autologin to use the intended username instead of literal $USER. Defensive: if the
+# wrapper were ever launched with sudo, autologin.conf could get User=root. (install.sh itself
+# runs as your user — omarchy v5 aborts as root.) PR #38
 if [ -f install/login/sddm.sh ]; then
   sed -i "s/User=\$USER/User=$OMARCHY_USER_NAME/" install/login/sddm.sh 2>/dev/null || true
 fi
@@ -227,20 +282,21 @@ echo " 8. Removed /etc/sddm.conf to avoid conflict with Omarchy UWSM session aut
 echo " 9. Disabled wpa_supplicant and configured NetworkManager to use iwd backend."
 echo "10. Pinned walker to omarchy repo to prevent CachyOS version conflict."
 echo ""
-echo "IMPORTANT: If you installed CachyOS without a deskop environment, you will not have a display manager installed." 
-echo "If this is the case, you will need to run the following command after this installation script is complete:"
-echo " 1.) ~/.local/share/omarchy/install/login/plymouth.sh"  
+echo "NOTE: Omarchy installs and ENABLES SDDM on every install (sddm/hyprland/uwsm are in"
+echo "omarchy-base.packages and login/sddm.sh runs the enable), so after reboot you go straight"
+echo "into the graphical Omarchy/Hyprland (UWSM) login automatically."
+echo "plymouth.sh is NOT needed for that — it only sets the boot splash theme."
 echo ""
-echo "The aboves script will modify your boot to start Omarchy's Hyprland desktop automatically." 
+echo "If you ever land on a TTY after reboot, the DM is already installed, so just run:"
+echo "  sudo systemctl enable --now sddm.service"
 echo ""
 echo "Press Enter to begin the installation of Omarchy..."
 read -r
 
-# tealdeer (CachyOS default) provides /usr/bin/tldr and conflicts with the `tldr` package
-# that Omarchy pulls in as a dependency. Removing tldr from the package lists is NOT enough,
-# because pacman still resolves tldr as a transitive dependency and aborts packaging/base.sh
-# with "tldr and tealdeer are in conflict". Remove tealdeer so tldr can install cleanly —
-# both provide the exact same `tldr` command, so nothing is lost.
+# CachyOS ships tealdeer (which Provides+Conflicts tldr). Omarchy lists the real `tldr` directly in
+# omarchy-base.packages, so the batch `pacman -S` hits tealdeer's Conflicts and aborts
+# packaging/base.sh. Stripping tldr from the lists (above) already fixes the abort; we ALSO remove
+# tealdeer as belt-and-suspenders (and to use the upstream tldr client) — both give /usr/bin/tldr.
 if pacman -Q tealdeer &>/dev/null 2>&1; then
     echo "Removing tealdeer (conflicts with the tldr dependency Omarchy needs)..."
     sudo pacman -Rdd --noconfirm tealdeer || true
@@ -250,7 +306,7 @@ fi
 # (CachyOS may have installed it separately; pacman aborts if /usr/bin/claude already exists.) PR #38
 if pacman -Q claude-code &>/dev/null 2>&1; then
     echo "Removing existing claude-code package to avoid file conflict..."
-    sudo pacman -Rdd --noconfirm claude-code
+    sudo pacman -Rdd --noconfirm claude-code || true
 elif [ -f /usr/bin/claude ]; then
     echo "Removing existing /usr/bin/claude to avoid file conflict..."
     sudo rm -f /usr/bin/claude

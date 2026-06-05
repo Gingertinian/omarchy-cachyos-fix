@@ -30,12 +30,26 @@ fi
 # Ensure VA-API utils are present for hardware video acceleration
 sudo pacman -S --needed --noconfirm libva-utils
 
-# Apply NVIDIA environment variables for UWSM/Hyprland
+# Detect an integrated GPU (AMD 1002: / Intel 8086:) => hybrid laptop.
+# IMPORTANT: '|| true' is required because this script runs with 'set -e' (line 2); a failing
+# grep on an NVIDIA-only machine would otherwise abort the script here.
+HAS_IGPU=$(lspci -nn | grep -iE 'VGA|3D|Display' | grep -iE '1002:|8086:' || true)
 mkdir -p "$HOME/.config/uwsm"
-if ! grep -q "GBM_BACKEND=nvidia-drm" "$HOME/.config/uwsm/env" 2>/dev/null; then
+
+if [[ -n "$HAS_IGPU" ]]; then
+    # HYBRID laptop (e.g. AMD iGPU + RTX 4050): the compositor runs on the integrated GPU.
+    # Do NOT export GBM_BACKEND=nvidia-drm / __GLX_VENDOR_LIBRARY_NAME=nvidia / LIBVA_DRIVER_NAME=nvidia
+    # globally — UWSM sources them for the whole session and they force GBM/GLX onto the NVIDIA
+    # device, black-screening the AMD-driven display at login (Hyprland #8308/#1878/#4274) and
+    # breaking hardware VA-API on AMD. Install nvidia-prime for per-app offload instead.
+    echo "[*] Hybrid GPU detected (integrated GPU present) — NOT setting global NVIDIA env vars."
+    sudo pacman -S --needed --noconfirm nvidia-prime   # provides the canonical /usr/bin/prime-run
+    echo "[*] Desktop runs on the iGPU. Render a specific app on the NVIDIA dGPU with: prime-run <app>"
+elif ! grep -q "GBM_BACKEND=nvidia-drm" "$HOME/.config/uwsm/env" 2>/dev/null; then
+    # NVIDIA-only machine: make NVIDIA the primary GBM/GLX backend.
     cat >>"$HOME/.config/uwsm/env" <<'EOF'
 
-# NVIDIA
+# NVIDIA (primary)
 export LIBVA_DRIVER_NAME=nvidia
 export GBM_BACKEND=nvidia-drm
 export __GLX_VENDOR_LIBRARY_NAME=nvidia
@@ -43,7 +57,7 @@ export NVD_BACKEND=direct
 export MOZ_DISABLE_RDD_SANDBOX=1
 export CUDA_DISABLE_PERF_BOOST=1
 EOF
-    echo "[*] NVIDIA environment variables written to ~/.config/uwsm/env"
+    echo "[*] NVIDIA (primary) environment variables written to ~/.config/uwsm/env"
 else
     echo "[*] NVIDIA environment variables already present."
 fi

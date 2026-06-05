@@ -30,17 +30,31 @@ The installer now **asks** whether to configure NVIDIA now. Answer **`n`** to bo
 
 The bundled `nvidia.sh` respects whatever driver CachyOS already installed and only falls back to `chwd -a` if none is present (it never force-removes your drivers). NVIDIA troubleshooting notes for RTX 40-series (incl. RTX 4050) are in §4.
 
-### c) Other reliability fixes folded in
+### c) Omarchy v5 blockers (found by a multi-agent audit, verified)
+
+These were added in Omarchy v5 and were not handled by the original wrapper:
+
+| Area | Fix |
+|---|---|
+| **`guard.sh` aborts on CachyOS** | v5's `install/preflight/guard.sh` detects `/etc/cachyos-release` and calls `abort` → `gum confirm \|\| exit 1`, killing the install (or forcing a surprise y/n mid-run). We strip **only** the Arch-derivative marker loop; the other guards (limine/btrfs/x86_64/non-root/secure-boot) stay active and CachyOS satisfies them. |
+| **`disable-mkinitcpio.sh` → unbootable after update** | v5 disables the mkinitcpio pacman hooks for install speed and only re-enables them at the bottom of `limine-snapper.sh` (which we blank). Left as-is they'd stay `*.disabled` forever → the next kernel `pacman -Syu` / NVIDIA DKMS rebuild never regenerates the initramfs → unbootable. We skip the disable entirely. |
+| **NVIDIA env vars black-screen hybrids** | `nvidia.sh` used to always write `GBM_BACKEND=nvidia-drm` etc. to `uwsm/env`. On a hybrid laptop (AMD iGPU + RTX 4050) that black-screens the iGPU display at login. Now it detects an iGPU and instead installs `nvidia-prime` (use `prime-run <app>`). |
+| **`hibernation.sh`** | Skipped: it creates a RAM-sized btrfs swapfile, edits `/etc/fstab`, and injects `resume=` into CachyOS's native Limine stack, all unprompted. |
+
+### d) Other reliability fixes folded in
 
 | Source | Fix |
 |---|---|
 | **PR #50** | Absolute paths (`$OMARCHY_DIR` / `$SCRIPT_DIR`) so the script works from any CWD, not just `bin/`. |
+| **PR #50** | `fetch-omarchy.sh` located via `$SCRIPT_DIR` (not the CWD), so the version selector isn't skipped. |
 | **PR #38** | Multi-keyserver fallback for the Omarchy signing key (the default `--recv-keys` fails often). |
-| **PR #38** | SDDM autologin uses your real username instead of `root` (install runs as root). |
+| **PR #38** | SDDM autologin uses your real username instead of `root`. |
 | **PR #38** | Removes a pre-existing `claude-code` / `/usr/bin/claude` to avoid a pacman file conflict. |
 | **Issue #49** | WiFi/iwd block is only appended once (idempotent on re-runs). |
-| **tldr/tealdeer** | `tldr` stripped from **every** `*.packages` list (CachyOS's `tealdeer` provides `/usr/bin/tldr` and conflicts → `packaging/base.sh` aborts). |
+| **Issue #32** | `yay` stripped from every `*.packages` (a pre-existing `yay-bin` would conflict and abort `base.sh`). |
+| **tldr/tealdeer** | `tldr` stripped from every `*.packages` **and** `tealdeer` removed pre-install (both provide `/usr/bin/tldr` → `packaging/base.sh` aborts). |
 | **fresh copy** | `~/.local/share/omarchy` is wiped and regenerated each run, so a stale un-patched copy can never run (root cause of "patched the script but install still fails"). |
+| **non-destructive** | backs up `~/.bashrc` before Omarchy overwrites it; refuses to run as root; mise activation works under fish on CachyOS. |
 
 All credit for the underlying fixes goes to the original PR authors on [mroboff/omarchy-on-cachyos](https://github.com/mroboff/omarchy-on-cachyos).
 
@@ -55,7 +69,7 @@ This installation script does the following three things:
   1) Prompts for and fetches your preferred version of Omarchy (Stable tags or Bleeding Edge)
   2) Makes adjustments to the Omarchy install scripts to support installation on CachyOS
   3) Launches the installation of Omarchy on an already setup CachyOS system
-  4) Installs and configures NVIDIA 580xx proprietary drivers
+  4) Detects/configures the correct NVIDIA driver via CachyOS `chwd` (nvidia-open-dkms for RTX 40-series/Turing+; the legacy nvidia-580xx branch only for pre-Turing Maxwell/Pascal/Volta), respecting any driver CachyOS already installed — and makes it **optional/deferrable** on hybrid AMD/Intel + NVIDIA laptops
 
 This script does not:
 
@@ -84,7 +98,7 @@ The philosophy behind this script is to produce a strong and stable blend of Cac
 
 6. Full Disk Encryption: As a distribution, Omarchy automatically turns on full disk encryption via LUKS. This script, however, leaves this decision up to the user. CachyOS can be installed with or without full disk encryption, and this script will install Omarchy on either setup.
 
-7. NVIDIA Drivers: *By default, CachyOS and Omarchy may attempt to use the latest NVIDIA drivers with open kernel modules. This script explicitly downgrades/pins the driver to the* *580xx proprietary series* *using CachyOS's* `chwd` *tool. This is a deliberate choice to fix widespread issues with hardware acceleration, electron apps, and browser flickering.*
+7. NVIDIA Drivers: This script does **not** force a specific driver. It respects whatever driver CachyOS already installed and only falls back to `chwd -a` if none is present. For an RTX 40-series (Ada / Turing+ with GSP, including the RTX 4050) that resolves to `nvidia-open-dkms`; the legacy `nvidia-580xx` branch is for pre-Turing GPUs only. On a **hybrid laptop** (AMD/Intel iGPU + NVIDIA dGPU) it does **not** write the NVIDIA-primary env vars (they black-screen the iGPU-driven display) — it installs `nvidia-prime` so you run specific apps on the dGPU with `prime-run <app>`.
 
 ## 4. Pre-Requisites
 
@@ -98,7 +112,7 @@ IMPORTANT: This script does not install CachyOS. You must do that separately (an
 
 4. Graphics Drivers for NVIDIA users: 
 
-5. This script now automatically handles NVIDIA driver installation by enforcing the proprietary 580xx drivers (via CachyOS `chwd`). This is necessary to avoid known regressions with hardware video decoding and browser flickering present in the newer open-kernel module drivers.
+5. This script defers to CachyOS `chwd` auto-detection (and respects any pre-existing driver). On an RTX 40-series (Ada) laptop this installs `nvidia-open-dkms`. It does **not** pin the legacy 580xx branch. NVIDIA setup is optional at install time — on a hybrid laptop, answer `n` and run it later.
 
    **Important:** 
 
