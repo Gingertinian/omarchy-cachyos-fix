@@ -110,8 +110,10 @@ echo "Making adjustments to Omarchy install scripts to support CachyOS..."
 # Navigate to Omarchy install scripts (absolute path — robust regardless of CWD; PR #50)
 cd "$OMARCHY_DIR"
 
-# Remove tldr installation to prevent conflict with tealdeer install.
-sed -i '/tldr/d' install/omarchy-base.packages
+# Remove tldr from EVERY package list — CachyOS ships tealdeer, which provides the same
+# /usr/bin/tldr and conflicts with the `tldr` package, aborting packaging/base.sh.
+# Robust: exact-line match across all *.packages, not just the one file (newer Omarchy layouts).
+find install -name '*.packages' -exec sed -i '/^tldr$/d' {} +
 
 # Update restart-needed for kernel updates to use cachyos instead of arch
 sed -i "s/ | sed 's\/-arch\/\\\.arch\/'//" bin/omarchy-update-restart
