@@ -39,6 +39,8 @@ The bundled `nvidia.sh` respects whatever driver CachyOS already installed and o
 | **PR #38** | SDDM autologin uses your real username instead of `root` (install runs as root). |
 | **PR #38** | Removes a pre-existing `claude-code` / `/usr/bin/claude` to avoid a pacman file conflict. |
 | **Issue #49** | WiFi/iwd block is only appended once (idempotent on re-runs). |
+| **tldr/tealdeer** | `tldr` stripped from **every** `*.packages` list (CachyOS's `tealdeer` provides `/usr/bin/tldr` and conflicts → `packaging/base.sh` aborts). |
+| **fresh copy** | `~/.local/share/omarchy` is wiped and regenerated each run, so a stale un-patched copy can never run (root cause of "patched the script but install still fails"). |
 
 All credit for the underlying fixes goes to the original PR authors on [mroboff/omarchy-on-cachyos](https://github.com/mroboff/omarchy-on-cachyos).
 

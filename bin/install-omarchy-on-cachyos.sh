@@ -199,7 +199,11 @@ if [ -f install/login/sddm.sh ]; then
   sed -i "s/User=\$USER/User=$OMARCHY_USER_NAME/" install/login/sddm.sh 2>/dev/null || true
 fi
 
-# Copy omarchy installation files to ~/.local/share/omarchy
+# Copy omarchy installation files to ~/.local/share/omarchy.
+# Regenerate from scratch every run so a stale copy can't keep an un-patched file
+# (e.g. an old omarchy-base.packages that still lists tldr). This is the root-cause fix
+# for "fixed the script but the install still fails" — the running copy must be fresh.
+rm -rf ~/.local/share/omarchy
 mkdir -p ~/.local/share/omarchy
 cp -r . ~/.local/share/omarchy
 cd ~/.local/share/omarchy
